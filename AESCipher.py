@@ -303,7 +303,7 @@ class AESCipher:
 
 if __name__ == '__main__':
     aes = AESCipher('Teddy Muba')
-    with open('data.csv', 'rb') as message_file:
+    with open('random_data.csv', 'rb') as message_file:
         message = message_file.read()
 
     encrypted = aes.encrypt(message)
