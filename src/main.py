@@ -12,6 +12,8 @@ from decompress import decompress, from_bytes
 from encryption_decryption.AESCipher import AESCipher
 from ICM20948 import ICM20948
 
+from datetime import datetime
+
 aes = AESCipher("EEE3097S")
 
 def read_data(filename):
@@ -413,6 +415,64 @@ class ICM20948(object):
         MotionVal[8]=Mag[2]
 # ICM code end
 
+#LPS22HB code start
+
+#i2c address
+LPS22HB_I2C_ADDRESS	  =  0x5C
+#
+LPS_ID                =  0xB1
+#Register 
+LPS_INT_CFG           =  0x0B        #Interrupt register
+LPS_THS_P_L           =  0x0C        #Pressure threshold registers 
+LPS_THS_P_H           =  0x0D        
+LPS_WHO_AM_I          =  0x0F        #Who am I        
+LPS_CTRL_REG1         =  0x10        #Control registers
+LPS_CTRL_REG2         =  0x11
+LPS_CTRL_REG3         =  0x12
+LPS_FIFO_CTRL         =  0x14        #FIFO configuration register 
+LPS_REF_P_XL          =  0x15        #Reference pressure registers
+LPS_REF_P_L           =  0x16
+LPS_REF_P_H           =  0x17
+LPS_RPDS_L            =  0x18        #Pressure offset registers
+LPS_RPDS_H            =  0x19        
+LPS_RES_CONF          =  0x1A        #Resolution register
+LPS_INT_SOURCE        =  0x25        #Interrupt register
+LPS_FIFO_STATUS       =  0x26        #FIFO status register
+LPS_STATUS            =  0x27        #Status register
+LPS_PRESS_OUT_XL      =  0x28        #Pressure output registers
+LPS_PRESS_OUT_L       =  0x29
+LPS_PRESS_OUT_H       =  0x2A
+LPS_TEMP_OUT_L        =  0x2B        #Temperature output registers
+LPS_TEMP_OUT_H        =  0x2C
+LPS_RES               =  0x33        #Filter reset register
+
+class LPS22HB(object):
+    def __init__(self,address=LPS22HB_I2C_ADDRESS):
+        self._address = address
+        self._bus = smbus.SMBus(1)
+        self.LPS22HB_RESET()                         #Wait for reset to complete
+        self._write_byte(LPS_CTRL_REG1 ,0x02)        #Low-pass filter disabled , output registers not updated until MSB and LSB have been read , Enable Block Data Update , Set Output Data Rate to 0 
+    def LPS22HB_RESET(self):
+        Buf=self._read_u16(LPS_CTRL_REG2)
+        Buf|=0x04                                         
+        self._write_byte(LPS_CTRL_REG2,Buf)               #SWRESET Set 1
+        while Buf:
+            Buf=self._read_u16(LPS_CTRL_REG2)
+            Buf&=0x04
+    def LPS22HB_START_ONESHOT(self):
+        Buf=self._read_u16(LPS_CTRL_REG2)
+        Buf|=0x01                                         #ONE_SHOT Set 1
+        self._write_byte(LPS_CTRL_REG2,Buf)
+    def _read_byte(self,cmd):
+        return self._bus.read_byte_data(self._address,cmd)
+    def _read_u16(self,cmd):
+        LSB = self._bus.read_byte_data(self._address,cmd)
+        MSB = self._bus.read_byte_data(self._address,cmd+1)
+        return (MSB	<< 8) + LSB
+    def _write_byte(self,cmd,val):
+        self._bus.write_byte_data(self._address,cmd,val)
+
+#LPS22HB code end
 
 
 if __name__ == "__main__":
@@ -423,6 +483,11 @@ if __name__ == "__main__":
     MotionVal=[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
     icm20948=ICM20948()
 
+    #LPS22HB
+    PRESS_DATA = 0.0
+    TEMP_DATA = 0.0
+    u8Buf=[0,0,0]
+    lps22hb=LPS22HB()
 
     #lines_compressed = []
     #lines_encrypted = []
@@ -437,21 +502,38 @@ if __name__ == "__main__":
 
         #print(decompress(from_bytes(bytearray(binascii.unhexlify(aes.decrypt(i))))))
 
+    f = open("data/IMU_data.txt", "w")
+    f.write("Current_time,MagX,MagY,MagZ,AccX,AccY,AccZ,GyroX,GyroY,GyroZ,Temp,Pres,Yaw,Pitch,Roll\n")
+    f.close()
     while True:
+        f = open("data/IMU_data.txt", "a")
+
+        now = datetime.now()
+
+        lps22hb.LPS22HB_START_ONESHOT()
+        if (lps22hb._read_byte(LPS_STATUS)&0x01)==0x01:  # a new pressure data is generated
+            u8Buf[0]=lps22hb._read_byte(LPS_PRESS_OUT_XL)
+            u8Buf[1]=lps22hb._read_byte(LPS_PRESS_OUT_L)
+            u8Buf[2]=lps22hb._read_byte(LPS_PRESS_OUT_H)
+            PRESS_DATA=((u8Buf[2]<<16)+(u8Buf[1]<<8)+u8Buf[0])/4096.0
+        if (lps22hb._read_byte(LPS_STATUS)&0x02)==0x02:   # a new pressure data is generated
+            u8Buf[0]=lps22hb._read_byte(LPS_TEMP_OUT_L)
+            u8Buf[1]=lps22hb._read_byte(LPS_TEMP_OUT_H)
+            TEMP_DATA=((u8Buf[1]<<8)+u8Buf[0])/100.0
+
         icm20948.icm20948_Gyro_Accel_Read()
         icm20948.icm20948MagRead()
         icm20948.icm20948CalAvgValue()
-        time.sleep(0.0001)
+        time.sleep(0.1)
         icm20948.imuAHRSupdate(MotionVal[0] * 0.0175, MotionVal[1] * 0.0175,MotionVal[2] * 0.0175,
                     MotionVal[3],MotionVal[4],MotionVal[5], 
                     MotionVal[6], MotionVal[7], MotionVal[8])
         pitch = math.asin(-2 * q1 * q3 + 2 * q0* q2)* 57.3
         roll  = math.atan2(2 * q2 * q3 + 2 * q0 * q1, -2 * q1 * q1 - 2 * q2* q2 + 1)* 57.3
         yaw   = math.atan2(-2 * q1 * q2 - 2 * q0 * q3, 2 * q2 * q2 + 2 * q3 * q3 - 1) * 57.3
-        temp = str([Mag[0],Mag[1],Mag[2], Accel[0],Accel[1],Accel[2], Gyro[0],Gyro[1],Gyro[2]] )
+
+        temp = str([now, Mag[0],Mag[1],Mag[2], Accel[0],Accel[1],Accel[2], Gyro[0],Gyro[1],Gyro[2], TEMP_DATA, PRESS_DATA, yaw, pitch, roll] )
+        temp = "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}".format(now, Mag[0],Mag[1],Mag[2], Accel[0],Accel[1],Accel[2], Gyro[0],Gyro[1],Gyro[2], TEMP_DATA, PRESS_DATA, yaw, pitch, roll)
+        f.write(temp+"\n")
+        f.close()
         print(temp)
-        #print("\r\n /-------------------------------------------------------------/ \r\n")
-        #print('\r\n Roll = %.2f , Pitch = %.2f , Yaw = %.2f\r\n'%(roll,pitch,yaw))
-        #print('\r\nAcceleration:  X = %d , Y = %d , Z = %d\r\n'%(Accel[0],Accel[1],Accel[2]))  
-        #print('\r\nGyroscope:     X = %d , Y = %d , Z = %d\r\n'%(Gyro[0],Gyro[1],Gyro[2]))
-        #print('\r\nMagnetic:      X = %d , Y = %d , Z = %d'%((Mag[0]),Mag[1],Mag[2]))
